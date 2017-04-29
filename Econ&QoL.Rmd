@@ -1,0 +1,332 @@
+---
+title: "Exploring economics and quality of life"
+author: "Tim Szewczyk"
+date: "2017 April 28"
+output:
+  pdf_document: default
+  html_notebook: default
+subtitle: The Data Incubator Capstone Project
+---
+
+# Overview
+This project creates a tool to explore patterns between economic/demographic indicators, quality of life, and voting patterns. All data are at the county level. Ideas for the main output:  
+
+* An interactive map that allows users to choose a state(s) and compare data for the counties within the state(s).  
+* An interactive scatter plot to compare particular variables, with the selected state(s) or county(ies) highlighted in the plot.  
+* A hierarchical model using latent variables to describe quality of life, access to public goods, etc.  
+* A hierarchical model predicting 2016 election results (& change from 2008, 2012) based on these variables.  
+* Other things  
+
+The data sources I intend to use are:  
+
+* 2010 census data  
+* Health data from the JUST Capital posting  
+* USDA data on food quality & prices  
+* Museum data  
+* Library data  
+* County-level elections results  
+* Cost of Living index in the future?  
+
+First, I just need to get the data all organized and cleaned, and then make a couple of interesting plots to show that this could actually go somewhere.  
+
+
+# Data cleaning  
+```{r setEnv, message=FALSE}
+## load libraries
+library(tidyverse); theme_set(theme_bw()); library(sevcheck)
+
+## read in data
+# FIPS reference for identifying counties
+fips.i <- read.csv("data/fips_codes_website.csv")
+fips.i$FIPS <- paste0(sprintf("%02d", fips.i$State.FIPS.Code),
+                      sprintf("%03d", fips.i$County.FIPS.Code))
+# census data
+cens.df <- read.csv("data/CENSUS_DATA.csv")
+cens.df <- cens.df[, -c(grep("CI90", names(cens.df)), 
+                        grep("Estimate", names(cens.df)))]
+cens.df$FIPS <- sprintf("%05d", cens.df$FIPS)
+# personal income data
+incm.df <- read.csv("data/lapi1116.csv")
+incm.df$FIPS <- fips.i$FIPS[match(paste(incm.df$State,
+                                        incm.df$County, sep="."),
+                                  paste(fips.i$State.Abbreviation,
+                                        fips.i$GU.Name, sep="."))]
+# health data
+hlth.df <- read.csv("data/HEALTH_DATA.csv")
+hlth.df <- hlth.df[, c(1:3, sort(c(grep("Pct", names(hlth.df)), 
+                                   grep("Rate", names(hlth.df)),
+                                   grep("Rank", names(hlth.df)))))]
+hlth.df$FIPS <- sprintf("%05d", hlth.df$FIPS)
+# museum data
+musm.df <- read.csv("data/Museum_Universe_Data_File_FY_2015_Q3.csv")
+musm.df$FIPS <- paste0(sprintf("%02d", musm.df$FIPSST),
+                      sprintf("%03d", musm.df$FIPSCO))
+# library data
+libr.df <- read.csv("data/PLS_FY2014_AE_pupld14a.csv")
+libr.df$FIPS <- paste0(sprintf("%02d", libr.df$FIPSST),
+                      sprintf("%03d", libr.df$FIPSCO))
+# election data
+elec.df <- read.csv("data/US_County_Level_Presidential_Results_08-16.csv")
+elec.df$FIPS <- sprintf("%05d", elec.df$fips_code)
+elec.df[,16:24] <- NA
+names(elec.df)[16:24] <- paste0("VS_", 
+                                rep(c("D_", "R_", "O_"), times=3), 
+                                rep(c(2008, 2012, 2016), each=3))
+elec.df[,16:18] <- elec.df[,4:6]/elec.df[,3]
+elec.df[,19:21] <- elec.df[,8:10]/elec.df[,7]
+elec.df[,22:24] <- elec.df[,12:14]/elec.df[,11]
+# calculate county summaries
+elec.df$CO_2008 <- ifelse(elec.df$dem_2008 > elec.df$gop_2008, "D", "R")
+elec.df$CO_2012 <- ifelse(elec.df$dem_2012 > elec.df$gop_2012, "D", "R")
+elec.df$CO_2016 <- ifelse(elec.df$dem_2016 > elec.df$gop_2016, "D", "R")
+# calculate state summaries
+elec.df$State <- fips.i$State.Abbreviation[match(elec.df$FIPS, fips.i$FIPS)]
+elSt.df <- aggregate(elec.df[,c(3:14)], 
+                     by=list(State=elec.df$State), FUN=sum)
+elSt.df$ST_2008 <- ifelse(elSt.df$dem_2008 > elSt.df$gop_2008, "D", "R")
+elSt.df$ST_2012 <- ifelse(elSt.df$dem_2012 > elSt.df$gop_2012, "D", "R")
+elSt.df$ST_2016 <- ifelse(elSt.df$dem_2016 > elSt.df$gop_2016, "D", "R")
+elec.df$ST_2008 <- elSt.df$ST_2008[match(elec.df$State, elSt.df$State)]
+elec.df$ST_2012 <- elSt.df$ST_2012[match(elec.df$State, elSt.df$State)]
+elec.df$ST_2016 <- elSt.df$ST_2016[match(elec.df$State, elSt.df$State)]
+elec.df$ST_SWNG <- elSt.df$ST_2016[match(elec.df$State, elSt.df$State)]
+swng <- c("WI", "PA", "NH", "MN", "OH", "IA", "VA", "FL", "MI", "NV", "CO", "NC")
+elec.df$ST_SWNG[elec.df$State %in% swng] <- "S"
+elec.df$ST_SWNG <- factor(elec.df$ST_SWNG, levels=c("D", "S", "R"),
+                          labels=c("Democratic", "Swing", "Republican"))
+elec.df$VS_D_12_16 <- elec.df$VS_D_2016 - elec.df$VS_D_2012
+elec.df$VS_R_12_16 <- elec.df$VS_R_2016 - elec.df$VS_R_2012
+# urbanization code
+urbn.df <- read.csv("data/NCHSURCodes2013.csv")
+urbn.df$FIPS <- sprintf("%05d", urbn.df$fips_code)
+urbn.df$urb.code2013 <- factor(urbn.df$urb.code2013, 
+                               labels=c("Large central metro", 
+                                        "Large fringe metro",
+                                        "Medium metro",
+                                        "Small metro",
+                                        "Micropolitan",
+                                        "Noncore"))
+
+## merge data
+all.df <- merge(cens.df[,c(3,6:9)], incm.df[,c(3:10)], by="FIPS") %>%
+  merge(hlth.df[,c(1,4:77)], by="FIPS") %>%
+  merge(elec.df[,c(3:34)], by="FIPS") %>%
+  merge(urbn.df[,c(6,7,10)])
+```
+
+# EDA  
+The main point of this project is exploration. At least for now. 
+```{r eda}
+# food insecurity in D vs R states
+ggplot(all.df, aes(x=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   y=logit(VS_D_2008))) + facet_wrap(~ST_2008) +
+  geom_hline(yintercept=0, linetype=3) + geom_point(alpha=0.5)
+ggplot(all.df, aes(x=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   y=logit(VS_D_2012))) + facet_wrap(~ST_2012) +
+  geom_hline(yintercept=0, linetype=3) + geom_point(alpha=0.5)
+ggplot(all.df, aes(x=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   y=logit(VS_D_2016))) + facet_wrap(~ST_2016) +
+  geom_hline(yintercept=0, linetype=3) + geom_point(alpha=0.5)
+
+ggplot(all.df, aes(x=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   y=log(dem_2008))) +
+  geom_point(alpha=0.5) + facet_wrap(~ST_2008)
+ggplot(all.df, aes(x=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   y=log(dem_2012))) +
+  geom_point(alpha=0.5) + facet_wrap(~ST_2012)
+ggplot(all.df, aes(x=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   y=log(dem_2016))) +
+  geom_point(alpha=0.5) + facet_wrap(~ST_2016)
+
+ggplot(all.df, aes(y=logit(Food.insecurity.Pct.Food.Insecure/100), 
+                   x=log(Median.Household.Income), colour=ST_2016)) +
+  geom_point(alpha=0.5) + scale_colour_manual(values=c("blue", "red")) + 
+  stat_smooth(method="lm")
+lm(logit(Food.insecurity.Pct.Food.Insecure/100) ~ log(Median.Household.Income)*ST_2016,
+   data=all.df) %>% summary 
+
+# population vs voting
+ggplot(all.df, aes(x=log(total_2008), colour=CO_2008)) + geom_density() +
+  scale_colour_manual(values=c("blue", "red"))
+
+ggplot(all.df, aes(x=Demographics.Pct.Non.Hispanic.White, y=Food.insecurity.Pct.Food.Insecure)) + geom_point(alpha=0.5) + facet_wrap(~ST_2012) + labs(x="% White", y="% Food Insecure")
+
+
+ggplot(all.df, aes(x=urb.code2013, y=logit(VS_D_2012))) + geom_boxplot()
+
+```
+
+
+```{r storingPlots, warning=FALSE}
+# makes and stores a whole bunch of graphs
+# plot parameters
+swng.cols <- c("blue", "purple3", "firebrick2")
+dr.cols <- swng.cols[c(1,3)]
+swng.dim <- c("height"=4, "width"=11)
+urb.dim <- c("height"=6, "width"=10)
+
+# transformations
+dat.col <- c(2:8,10:11,23:86)
+all.sc <- all.df
+log.col <- c(5:8,23,32:33,35:38,50:51,58:59,63,66:67,71,74:75)
+logit.col <- c(2:4,24:31,34,39:49,52:57,60:62,64:65,68:70,72:73,77:86)
+all.sc[,log.col] <- log(all.sc[,log.col])
+all.sc[,logit.col] <- logit(all.sc[,logit.col]/100)
+
+# plotting loop
+for(i in dat.col) {
+  ##### variable histograms
+  jpeg(paste0("EQ_EDA/hist/", i, ".jpg"))
+    hist(all.df[,i], breaks=30, main=names(all.df)[i])
+  dev.off()
+  jpeg(paste0("EQ_EDA/hist/", i, "_sc.jpg"))
+    hist(all.sc[,i], breaks=30, main=paste(names(all.sc)[i], "Scaled"))
+  dev.off()
+
+  
+  ##### county parties
+  co.party.plot <- ggplot(all.sc, aes_string(y=names(all.df)[i], 
+                                             x="VS_D_2008",
+                                    colour="CO_2008")) +
+    geom_vline(xintercept=0.5, linetype=3) +
+    geom_point(shape=1, alpha=0.5) + facet_grid(~ST_SWNG) +
+    stat_smooth(method="loess", span=1, colour="gray30", se=F) +
+    stat_smooth(data=filter(all.sc, CO_2008=="R"), se=F, size=0.5,
+                method="loess", span=1, colour="firebrick4") +
+    stat_smooth(data=filter(all.sc, CO_2008=="D"), se=F, size=0.5,
+                method="loess", span=1, colour="blue3") +
+    geom_rug(sides="lb", alpha=0.07) + labs(y=names(all.df)[i]) +
+    scale_colour_manual(values=dr.cols) + xlim(0,1)
+  # 2008
+  gg.p <- co.party.plot + labs(x="% Dem 2008")
+  ggsave(paste0("EQ_EDA/CO_Party/", names(all.df)[i], "_2008D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2008") + labs(x="% Rep 2008")
+  ggsave(paste0("EQ_EDA/CO_Party/", names(all.df)[i], "_2008R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  # 2012
+  gg.p <- co.party.plot %+% 
+    aes_string(x="VS_D_2012", colour="CO_2012") + labs(x="% Dem 2012")
+  ggsave(paste0("EQ_EDA/CO_Party/", names(all.df)[i], "_2012D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2012") + labs(x="% Rep 2012")
+  ggsave(paste0("EQ_EDA/CO_Party/", names(all.df)[i], "_2012R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  # 2016
+  gg.p <- co.party.plot %+% 
+    aes_string(x="VS_D_2016", colour="CO_2016") + labs(x="% Dem 2016")
+  ggsave(paste0("EQ_EDA/CO_Party/", names(all.df)[i], "_2016D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2016") + labs(x="% Rep 2016")
+  ggsave(paste0("EQ_EDA/CO_Party/", names(all.df)[i], "_2016R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  # 2016 - 2012
+  gg.p <- co.party.plot %+% aes_string(x="VS_D_12_16", colour="CO_2016") + 
+    geom_vline(xintercept=0, linetype=3) + 
+    labs(x="(% Dem 2016) - (% Dem 2012)") + xlim(-0.25,0.25)
+  ggsave(paste0("EQ_EDA/CO_Party/chg/", names(all.df)[i], "_16-12D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_12_16") + 
+    labs(x="(% Rep 2016) - (% Rep 2012)")
+  ggsave(paste0("EQ_EDA/CO_Party/chg/", names(all.df)[i], "_16-12R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  
+  
+  ##### urbanization (facet by swing status)
+  urb.plot <- ggplot(all.sc, aes_string(y=names(all.df)[i], 
+                                        x="VS_D_2008",
+                                    colour="urb.code2013")) +
+    geom_vline(xintercept=0.5, linetype=3) +
+    geom_point(shape=1, alpha=0.8) + facet_grid(~ST_SWNG) +
+    stat_smooth(method="loess", span=1, colour="gray30", se=F) +
+    stat_smooth(se=F, size=0.5, method="loess", span=1) +
+    geom_rug(sides="lb", size=0.1) +
+    scale_colour_brewer(type="div") +
+    labs(y=names(all.df)[i]) + xlim(0,1)
+  # 2008
+  gg.p <- urb.plot + labs(x="% Dem 2008")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/", names(all.df)[i], "_2008D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2008") + labs(x="% Rep 2008")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/", names(all.df)[i], "_2008R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  # 2012
+  gg.p <- urb.plot %+% aes_string(x="VS_D_2012") + labs(x="% Dem 2012")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/", names(all.df)[i], "_2012D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2012") + labs(x="% Rep 2012")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/", names(all.df)[i], "_2012R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  # 2016
+  gg.p <- urb.plot %+% aes_string(x="VS_D_2016") + labs(x="% Dem 2016")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/", names(all.df)[i], "_2016D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2016") + labs(x="% Rep 2016")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/", names(all.df)[i], "_2016R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  # 2016 - 2012
+  gg.p <- urb.plot %+% aes_string(x="VS_D_12_16") + 
+    geom_vline(xintercept=0, linetype=3) + 
+    labs(x="(% Dem 2016) - (% Dem 2012)") + xlim(-0.25,0.25)
+  ggsave(paste0("EQ_EDA/Urban_bySwng/chg/", names(all.df)[i], "_16-12D.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_12_16") + labs(x="(% Rep 2016) - (% Rep 2012)")
+  ggsave(paste0("EQ_EDA/Urban_bySwng/chg/", names(all.df)[i], "_16-12R.jpg"), gg.p,
+         height=swng.dim[1], width=swng.dim[2])
+  
+  
+  ##### urbanization (facet by urban code)
+  urb.plot2 <- ggplot(all.sc, aes_string(y=names(all.df)[i], 
+                                         x="VS_D_2008",
+                                         colour="ST_SWNG")) +
+    geom_vline(xintercept=0.5, linetype=3) +
+    geom_point(shape=1, alpha=0.7) + facet_wrap(~urb.code2013) +
+    stat_smooth(method="loess", span=1, colour="gray30", se=F) +
+    stat_smooth(se=F, size=0.5, method="loess", span=1) +
+    geom_rug(sides="lb", size=0.1) +
+    scale_colour_manual(values=swng.cols) +
+    labs(y=names(all.df)[i]) + xlim(0,1)
+  # 2008
+  gg.p <- urb.plot2 + labs(x="% Dem 2008")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/", names(all.df)[i], "_2008D.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2008") + labs(x="% Rep 2008")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/", names(all.df)[i], "_2008R.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  # 2012
+  gg.p <- urb.plot2 %+% aes_string(x="VS_D_2012") + labs(x="% Dem 2012")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/", names(all.df)[i], "_2012D.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2012") + labs(x="% Rep 2012")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/", names(all.df)[i], "_2012R.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  # 2016
+  gg.p <- urb.plot2 %+% aes_string(x="VS_D_2016") + labs(x="% Dem 2016")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/", names(all.df)[i], "_2016D.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_2016") + labs(x="% Rep 2016")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/", names(all.df)[i], "_2016R.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  # 2016 - 2012
+  gg.p <- urb.plot2 %+% aes_string(x="VS_D_12_16") + 
+    geom_vline(xintercept=0, linetype=3) + 
+    labs(x="(% Dem 2016) - (% Dem 2012)") + xlim(-0.25,0.25)
+  ggsave(paste0("EQ_EDA/Urban_byUrb/chg/", names(all.df)[i], "_16-12D.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+  gg.p <- gg.p %+% aes_string(x="VS_R_12_16") + labs(x="(% Rep 2016) - (% Rep 2012)")
+  ggsave(paste0("EQ_EDA/Urban_byUrb/chg/", names(all.df)[i], "_16-12R.jpg"), gg.p,
+         height=urb.dim[1], width=urb.dim[2])
+}
+
+
+
+
+
+```
+
+
+
+
+
+
+
